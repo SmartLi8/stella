@@ -1,9 +1,10 @@
 # coding=utf8
+
 import os
 import logging
 import yaml
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import  DataLoader
 from os.path import join
 from copy import deepcopy
 from transformers import AutoTokenizer, AutoModel, BertModel
@@ -13,7 +14,6 @@ import shutil
 os.environ["WANDB_DISABLED"] = "true"
 transformers_logger = logging.getLogger("transformers")
 transformers_logger.setLevel(logging.WARNING)
-from transformers import TrainerCallback, TrainerControl, TrainerState
 import torch.nn.functional as F
 from loguru import logger
 
@@ -23,10 +23,100 @@ from src import (
     PairDataSet,
     pair_collate_fn,
     VecDataSet,
-    get_mean_params, SaveModelCallBack, MyTrainer
+    get_mean_params, SaveModelCallBack, cosent_loss
 )
 
+
+class MyTrainer(Trainer):
+    def compute_loss(self, model, inputs, return_outputs=False):
+        def get_vecs_e5(ipt):
+            attention_mask = ipt["attention_mask"]
+            model_output = model(**ipt)
+            last_hidden = model_output.last_hidden_state.masked_fill(~attention_mask[..., None].bool(), 0.0)
+            vectors = last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+            vectors = F.normalize(vectors, 2.0, dim=1)
+            return vectors
+
+        def get_vecs_bge(ipt):
+            # print("input_ids.shape", ipt["input_ids"].shape)
+            token_embeddings = self.model(**ipt)[0]
+            vectors = token_embeddings[:, 0, :].squeeze(1)  # bsz*h
+            vectors = F.normalize(vectors, 2.0, dim=1)
+            return vectors
+
+        # print(f"len(inputs){inputs[0]}", len(inputs))
+        # Step1 计算inbatch loss
+        q_num = inputs[-1]
+        name = inputs[0]
+        inputs = inputs[1:-1]
+        in_batch_loss, pair_loss = torch.tensor(0.0), torch.tensor(0.0)
+        if "in_batch" in name:
+            if model_name in ["e5", "piccolo"]:
+                vectors = [get_vecs_e5(ipt) for ipt in inputs]
+            elif model_name in ["bge", "simbert", "simbert_hp"]:
+                vectors = [get_vecs_bge(ipt) for ipt in inputs]
+            else:
+                raise NotImplementedError()
+            vectors = torch.cat(vectors, dim=0)
+            vecs1, vecs2 = vectors[:q_num, :], vectors[q_num:, :]
+            logits = torch.mm(vecs1, vecs2.t())
+            print("logits.shape", logits.shape)
+            LABEL = torch.LongTensor(list(range(q_num))).to(vectors.device)
+            in_batch_loss = F.cross_entropy(logits * in_batch_ratio, LABEL)
+
+        # Step2 计算pair loss
+        elif "pair" in name:
+            neg_pos_idxs = inputs[-1]
+            inputs = inputs[:-1]
+            if model_name in ["e5", "piccolo"]:
+                vectors = [get_vecs_e5(ipt) for ipt in inputs]
+            elif model_name in ["bge", "simbert", "simbert_hp"]:
+                vectors = [get_vecs_bge(ipt) for ipt in inputs]
+            else:
+                raise NotImplementedError()
+            vectors = torch.cat(vectors, dim=0)
+            vecs1, vecs2 = vectors[:q_num, :], vectors[q_num:, :]
+
+            pred_sims = F.cosine_similarity(vecs1, vecs2)
+            # print(name, pred_sims.shape)
+            pair_loss = cosent_loss(
+                neg_pos_idxs=neg_pos_idxs,
+                pred_sims=pred_sims,
+                cosent_ratio=cosent_ratio,
+                zero_data=torch.tensor([0.0]).to(vectors.device)
+            )
+        # Step3 计算 ewc loss
+        losses = []
+        for n, p in model.named_parameters():
+            # 每个参数都有mean和fisher
+            mean = original_weight[n.replace("module.", "")]
+            if "position_embeddings.weight" in n:
+                print(p.shape, mean.shape)
+                losses.append(
+                    ((p - mean)[:512, :] ** 2).sum()
+                )
+            else:
+                losses.append(
+                    ((p - mean) ** 2).sum()
+                )
+        ewc_loss = sum(losses)
+
+        final_loss = in_batch_loss + pair_loss
+        if "ewc" in train_method:
+            final_loss += (ewc_loss * ewc_ratio)
+        if "in_batch" in name:
+            logger.info(
+                f"step-{self.state.global_step}, {name}-loss:{in_batch_loss.item()}, ewc_loss:{ewc_loss.item()}"
+            )
+        else:
+            logger.info(
+                f"step-{self.state.global_step}, {name}-loss:{pair_loss.item()}, ewc_loss:{ewc_loss.item()}"
+            )
+        return (final_loss, None) if return_outputs else final_loss
+
+
 if __name__ == "__main__":
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     pair_label_map = {
         "0": 0,
         "1": 1,
@@ -45,7 +135,8 @@ if __name__ == "__main__":
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     # 读取参数并赋值
-    with open('conf.yml', "r", encoding="utf8") as fr:
+    config_path = 'conf.yml'
+    with open(config_path, "r", encoding="utf8") as fr:
         conf = yaml.safe_load(fr)
 
     # args of hf trainer
@@ -59,28 +150,22 @@ if __name__ == "__main__":
     else:
         hf_args.pop("deepspeed", None)
 
-    # hf_args["model_name"] = conf["model_name"]
-    # hf_args["task_name"] = conf["task_name"]
-    # hf_args["in_batch_train_paths"] = conf["in_batch_train_paths"]
-    # hf_args["pair_train_paths"] = conf["pair_train_paths"]
-    # hf_args["loader_idxs"] = conf["loader_idxs"]
-    # hf_args["max_length"] = conf["max_length"]
-    # hf_args["model_dir"] = conf["model_dir"]
-    # hf_args["train_method"] = conf["train_method"]
-    # hf_args["ewc_ratio"] = conf["ewc_ratio"]
-    # hf_args["cosent_ratio"] = conf["cosent_ratio"]
-    # hf_args["in_batch_ratio"] = conf["in_batch_ratio"]
-    # hf_args["hard_neg_ratio"] = conf["hard_neg_ratio"]
-    output_dir = hf_args["output_dir"]
     model_name = conf["model_name"]
+
+    grad_checkpoint = hf_args["gradient_checkpointing"]
     task_name = conf["task_name"]
-    max_length = conf["max_length"]
-    train_method = conf["train_method"]
     in_batch_train_paths = conf["in_batch_train_paths"]
     pair_train_paths = conf["pair_train_paths"]
-    model_dir = conf["model_dir"]
     loader_idxs = conf["loader_idxs"]
-    grad_checkpoint = hf_args["gradient_checkpointing"]
+    max_length = conf["max_length"]
+    model_dir = conf["model_dir"]
+    train_method = conf["train_method"]
+    ewc_ratio = conf["ewc_ratio"]
+    cosent_ratio = conf["cosent_ratio"]
+    in_batch_ratio = conf["in_batch_ratio"]
+    hard_neg_ratio = conf["hard_neg_ratio"]
+
+    output_dir = hf_args["output_dir"]
 
     # 构建训练输出目录
     if world_size == 1 and conf["auto_ouput_dir"]:
@@ -143,8 +228,10 @@ if __name__ == "__main__":
         trust_remote_code=True,
         torch_dtype=torch.float16
     )
+    model.to(device)
 
-    conf['original_weight'] = get_mean_params(model)
+    original_weight = get_mean_params(model)
+
     tokenizer = MODEL_NAME_INFO[model_name][1].from_pretrained(model_dir, trust_remote_code=True)
     if grad_checkpoint:
         try:
@@ -170,7 +257,6 @@ if __name__ == "__main__":
         data_collator=lambda x: x[0],
         train_dataset=VecDataSet(in_batch_data_loaders + pair_data_loaders, loader_idxs),
         tokenizer=tokenizer,
-        conf=conf,
-        callbacks=[SaveModelCallBack(output_dir=output_dir, save_steps=conf["save_steps"],local_rank=local_rank)]
+        callbacks=[SaveModelCallBack(output_dir=output_dir, save_steps=conf["save_steps"], local_rank=local_rank)]
     )
     trainer.train()

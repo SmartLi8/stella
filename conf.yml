@@ -1,7 +1,7 @@
 task_name: general
 model_name: piccolo
 model_dir: D:/code/stella/model/piccolo-base-zh-1024
-use_deepspeed: false
+use_deepspeed: true
 desc: "piccolo"
 train_method: "ewc"
 ewc_ratio: 10.0

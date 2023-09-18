@@ -7,6 +7,4 @@ from .data_collator import (
     VecDataSet
 )
 
-from .trainer import SaveModelCallBack, MyTrainer
-
-from .utils import cosent_loss, get_mean_params
+from .utils import cosent_loss, get_mean_params, SaveModelCallBack

@@ -14,6 +14,7 @@ class InBatchDataSet(Dataset):
         self.data_name = data_name
         self.model_name = model_name
         self.load_data()
+
     def load_data(self):
         for data_path in self.data_paths:
             with open(data_path, "r", encoding="utf8") as fr:

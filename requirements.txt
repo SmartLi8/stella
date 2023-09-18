@@ -1,0 +1,5 @@
+transformers>=4.33.2
+yaml>=0.2.5
+pyyaml>=6.0
+loguru>=0.7.2
+deepspeed>=0.10.1
