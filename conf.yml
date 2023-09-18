@@ -1,0 +1,89 @@
+task_name: general
+model_name: piccolo
+model_dir: D:/code/stella/model/piccolo-base-zh-1024
+use_deepspeed: false
+desc: "piccolo"
+train_method: "ewc"
+ewc_ratio: 10.0
+cosent_ratio: 20.0
+in_batch_ratio: 30.0
+save_steps: 50
+hard_neg_ratio: 0.2
+in_batch_train_paths:
+  # synthetic_qp里的qp还是bge的向量
+  synthetic_qp:
+    - ./data/v2/wudao_synthetic_alpaca2_hfl_0_100000_vec_neg.jsonl
+    - ./data/v2/m3e_synthetic_alpaca2_hfl_0_100000_vec_neg.jsonl
+  # normal里的hard neg默认是bm25
+  normal:
+    - ./data/v2/m3e_long_length_hard_neg.jsonl
+    - ./data/v2/wudao_long_length_hard_neg.jsonl
+
+pair_train_paths:
+  binclf:
+    - ./data/v2/binclf_data.jsonl
+  nli:
+    - ./data/v2/nli_data.jsonl
+
+loader_idxs: null
+in_batch_bsz: 1024
+pair_bsz: 1024
+max_length: 1024
+
+auto_ouput_dir: false
+train_args:
+  seed: 666
+  output_dir: ./output/tmp
+  evaluation_strategy: "no"
+  num_train_epochs: 4
+  max_steps: 505
+  logging_steps: 9999999
+  eval_steps: 9999999
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 1
+  per_device_eval_batch_size: 1
+  learning_rate: 5.0e-06
+  weight_decay: 0.00001
+  warmup_ratio: 0.05
+  lr_scheduler_type: "linear"
+  dataloader_drop_last: false
+
+  fp16: false
+  gradient_checkpointing: true
+  deepspeed:
+    fp16:
+      enabled: true
+      hysteresis: 2
+      initial_scale_power: 16
+      loss_scale: 0
+      loss_scale_window: 1000
+      min_loss_scale: 1
+    train_micro_batch_size_per_gpu: ToBeAdded
+    train_batch_size: "auto"
+    gradient_accumulation_steps: ToBeAdded
+    gradient_clipping: auto
+    optimizer:
+      params:
+        adam_w_mode: true
+        lr: ToBeAdded
+        torch_adam: true
+        weight_decay: auto
+      type: AdamW
+    scheduler:
+      params:
+        total_num_steps: auto
+        warmup_max_lr: auto
+        warmup_min_lr: auto
+        warmup_num_steps: auto
+      type: WarmupDecayLR
+    steps_per_print: 2
+    wall_clock_breakdown: false
+    zero_optimization:
+      allgather_bucket_size: 200000000.0
+      allgather_partitions: true
+      contiguous_gradients: true
+      overlap_comm: true
+      reduce_bucket_size: auto
+      reduce_scatter: true
+      stage: 0
+
