@@ -45,6 +45,15 @@ stella-base-zh and stella-large-zh use piccolo-base-zh and piccolo-large-zh as t
 Training strategy:\
 One iterator for each type of data, separately calculating the loss.
 
+## 项目文件说明
+
+```
+./run_train.py # 训练脚本
+./src/add_new_pos_embed.py # 扩展现有模型长度的脚本
+./src/run_eval_stella.py # 评估cmteb效果的脚本
+
+```
+
 ## Metric
 
 #### C-MTEB leaderboard

@@ -1,5 +1,5 @@
 """
-扩展当前BERT的长度
+扩展当前BERT的长度，新扩展的emebdding用层次分解的位置编码进行初始化
 """
 import torch
 import json
